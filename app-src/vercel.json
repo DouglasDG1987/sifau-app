@@ -1,0 +1,14 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "SIFAU_LLM_API_KEY": "@llm_api_key",
+    "SIFAU_LLM_BASE_URL": "@llm_base_url",
+    "SIFAU_LLM_MODEL": "@llm_model"
+  }
+}

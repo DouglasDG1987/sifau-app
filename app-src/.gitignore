@@ -1,0 +1,43 @@
+# Dependências
+node_modules/
+
+# Build do Next.js
+.next/
+out/
+.turbo/
+
+# Ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Logs e cache
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+
+# Produção / artefatos locais
+dist/
+build/
+coverage/
+
+# Editor / sistema
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Credenciais e certificados
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Dados locais
+*.sqlite
+*.sqlite3
+*.db
