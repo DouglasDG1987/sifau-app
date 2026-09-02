@@ -70,21 +70,9 @@ export default function AuthScreen() {
 
   /**
    * Após login/cadastro bem-sucedido:
-   * 1. Confirma que o cookie de sessão realmente foi gravado e aceito pelo
-   *    navegador (GET /api/auth) — se não, mostra erro claro em vez de
-   *    deixar o usuário preso na tela.
-   * 2. Navega com carregamento completo da página (window.location.assign):
-   *    o navegador faz uma requisição de documento nova, enviando o cookie,
-   *    e o servidor renderiza a tela do perfil sem depender do estado do
-   *    router client-side ou de cache do service worker.
+   * Redireciona para a tela do perfil do usuário.
    */
   const finish = async (profile: Profile) => {
-    const check = await apiGet<{ profile: Profile | null }>("/api/auth");
-    if (!check.profile) {
-      throw new Error(
-        "A sessão não pôde ser confirmada neste navegador. Habilite os cookies (e tente por HTTPS) e entre novamente."
-      );
-    }
     toast.success(`Bem-vindo(a), ${profile.nome.split(" ")[0]}!`);
     window.location.assign(roleHome(profile.role));
   };
@@ -105,12 +93,17 @@ export default function AuthScreen() {
   const onRegister = async (values: RegisterValues) => {
     setError(null);
     try {
-      const res = await apiPost<{ profile: Profile }>("/api/auth", {
+      const res = await apiPost<{ profile: Profile; requiresEmailConfirmation?: boolean }>("/api/auth", {
         action: "register",
         ...values,
         telefone: values.telefone || null,
         bairro: values.bairro || null,
       });
+      if (res.requiresEmailConfirmation) {
+        toast.success("Conta criada. Confirme o e-mail e depois entre com sua senha.");
+        setMode("login");
+        return;
+      }
       toast.success("Conta criada com sucesso!");
       await finish(res.profile);
     } catch (e) {

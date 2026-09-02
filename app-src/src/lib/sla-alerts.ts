@@ -3,7 +3,7 @@
 // ============================================================
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { db } from "@/db";
-import { occurrences, profiles } from "@/db/schema";
+import { occurrences, profiles, inspections } from "@/db/schema";
 import { sendSLAAlert } from "@/lib/notifications";
 
 const SLA_ALERT_HOURS = 72; // Alertar 72h antes do vencimento
@@ -125,11 +125,27 @@ export async function getFiscalSLAStats(fiscalId: string): Promise<{
 
   // Calcula compliance baseado em ocorrências resolvidas
   const resolved = assigned.filter((o) => o.status === "resolvida");
-  const resolvedOnTime = resolved.filter(
-    (o) => o.sla_deadline >= o.sla_deadline // Simplificado - na prática precisa da data de resolução
-  ).length;
-  
-  const compliance_pct = resolved.length > 0 
+  // Sem uma coluna própria de resolução em occurrences, usa a criação da
+  // inspeção como proxy da conclusão (mesma referência usada no ranking).
+  const resolvedIds = resolved.map((o) => o.id);
+  let resolvedOnTime = 0;
+  if (resolvedIds.length > 0) {
+    const inspectionRows = await db
+      .select({ occurrence_id: inspections.occurrence_id, completed_at: inspections.created_at })
+      .from(inspections)
+      .where(inArray(inspections.occurrence_id, resolvedIds));
+    const completedAt = new Map<string, Date>();
+    for (const row of inspectionRows) {
+      const current = completedAt.get(row.occurrence_id);
+      if (!current || row.completed_at < current) completedAt.set(row.occurrence_id, row.completed_at);
+    }
+    resolvedOnTime = resolved.filter((o) => {
+      const completed = completedAt.get(o.id);
+      return completed ? completed <= o.sla_deadline : false;
+    }).length;
+  }
+
+  const compliance_pct = resolved.length > 0
     ? Math.round((resolvedOnTime / resolved.length) * 100)
     : 100;
 

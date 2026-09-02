@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase";
+import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
 import { getSessionProfile, destroySession } from "@/lib/auth";
 import type { UserRole } from "@/lib/types";
 
@@ -74,47 +75,64 @@ export async function POST(req: NextRequest) {
       return err("Já existe uma conta com este e-mail.", 409);
     }
     
-    // Criar usuário no Supabase Auth (sem confirmação por email)
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: undefined,
-        data: {
-          email_confirm: true,
-        },
-      },
-    });
-    
-    if (authError) {
-      return err(authError.message, 400);
-    }
-    
-    if (!authData.user) {
-      return err("Erro ao criar usuário.", 500);
-    }
-    
-    // Criar perfil na tabela profiles
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .insert({
-        id: authData.user.id,
+    // Cria e confirma o usuário via Admin API quando a service role estiver
+    // configurada. Isso evita depender da confirmação por e-mail no cadastro.
+    let authUserId: string;
+    let requiresEmailConfirmation = false;
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const admin = createSupabaseAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY,
+        { auth: { autoRefreshToken: false, persistSession: false } }
+      );
+      const { data: adminData, error: adminError } = await admin.auth.admin.createUser({
         email,
-        password_hash: '', // Supabase Auth gerencia a senha
-        role,
-        nome,
-        telefone: body.telephone ? String(body.telephone) : null,
-        bairro: body.bairro ? String(body.bairro) : null,
-        especialidade: body.especialidade ? String(body.especialidade) : null,
-        region: body.region ? String(body.region) : null,
-        ativo: true,
+        password,
+        email_confirm: true,
       });
-      
-    if (profileError) {
-      return err("Erro ao criar perfil.", 500);
+      if (adminError) return err(adminError.message, 400);
+      if (!adminData.user) return err("Erro ao criar usuário.", 500);
+      authUserId = adminData.user.id;
+
+      // O Admin API não cria uma sessão no navegador; faça um login normal
+      // para que o createServerClient grave os cookies httpOnly da sessão.
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) return err("Usuário criado, mas não foi possível iniciar a sessão.", 500);
+    } else {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: undefined },
+      });
+      if (authError) return err(authError.message, 400);
+      if (!authData.user) return err("Erro ao criar usuário.", 500);
+      requiresEmailConfirmation = !authData.session;
+      authUserId = authData.user.id;
     }
     
-    return NextResponse.json({ profile: { id: authData.user.id, email, role, nome } }, { status: 201 });
+    // Criar perfil usando função SQL que contorna RLS
+    const { error: rpcError } = await supabase.rpc('create_profile_with_auth', {
+      p_id: authUserId,
+      p_email: email,
+      p_password_hash: "!managed-by-supabase-auth!",
+      p_role: role,
+      p_nome: nome,
+      p_telefone: body.telefone ? String(body.telefone) : null,
+      p_bairro: body.bairro ? String(body.bairro) : null,
+      p_especialidade: body.especialidade ? String(body.especialidade) : null,
+      p_region: body.region ? String(body.region) : null,
+      p_ativo: true
+    });
+
+    if (rpcError) {
+      console.error("Erro ao criar perfil via RPC:", rpcError);
+      return err(rpcError.message.includes("duplicate") || rpcError.message.includes("unique")
+        ? "Já existe um perfil com este e-mail."
+        : "Erro ao criar perfil: " + rpcError.message, 500);
+    }
+
+    // Perfil criado com sucesso, retornar os dados básicos
+    return NextResponse.json({ profile: { id: authUserId, email, role, nome } }, { status: 201 });
   }
 
   if (action === "logout") {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { notifications, deviceTokens } from "@/db/schema";
 import { getSessionProfile } from "@/lib/auth";
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   };
 
   if (body.action === "mark_read" && body.notification_id) {
-    await markNotificationAsRead(body.notification_id);
+    await markNotificationAsRead(profile.id, body.notification_id);
     return NextResponse.json({ ok: true });
   }
 
@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.action === "unregister_token" && body.token) {
-    await unregisterDeviceToken(body.token);
+    await unregisterDeviceToken(profile.id, body.token);
     return NextResponse.json({ ok: true });
   }
 
@@ -82,13 +82,13 @@ export async function PATCH(req: NextRequest) {
 
   if (body.notification_id && body.read !== undefined) {
     if (body.read) {
-      await markNotificationAsRead(body.notification_id);
+      await markNotificationAsRead(profile.id, body.notification_id);
     } else {
       // Marcar como não lida (raro, mas possível)
       await db
         .update(notifications)
         .set({ read: false })
-        .where(eq(notifications.id, body.notification_id));
+        .where(and(eq(notifications.id, body.notification_id), eq(notifications.profile_id, profile.id)));
     }
     return NextResponse.json({ ok: true });
   }

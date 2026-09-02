@@ -2,7 +2,9 @@
 // SIFAU — Trilha de auditoria (server)
 // Toda mudança de status gera registro imutável com IP/geo/timestamp.
 // ============================================================
-import { getSupabaseClient } from "@/db";
+import { db } from "@/db";
+import { profiles, statusLogs } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import type { OccurrenceStatus } from "@/lib/types";
 
 const SYSTEM_EMAIL = "sistema@sifau.local";
@@ -11,33 +13,45 @@ let systemUserCache: { id: string; nome: string } | null = null;
 
 export async function getSystemUser(): Promise<{ id: string; nome: string }> {
   if (systemUserCache) return systemUserCache;
-  const supabase = await getSupabaseClient();
-  const { data: rows } = await supabase
-    .from('profiles')
-    .select('id, nome')
-    .eq('email', SYSTEM_EMAIL)
+  const existing = await db
+    .select({ id: profiles.id, nome: profiles.nome })
+    .from(profiles)
+    .where(eq(profiles.email, SYSTEM_EMAIL))
     .limit(1);
-  if (rows && rows[0]) {
-    systemUserCache = rows[0];
-    return rows[0];
+  if (existing[0]) {
+    systemUserCache = existing[0];
+    return existing[0];
   }
-  const { data: created } = await supabase
-    .from('profiles')
-    .insert({
-      email: SYSTEM_EMAIL,
-      password_hash: "!", // sem acesso
-      role: "auditor",
-      nome: "Sistema SIFAU",
-      ativo: true,
-    })
-    .select('id, nome')
-    .single();
-  if (created) {
-    systemUserCache = created;
-    return created;
+
+  try {
+    const [created] = await db
+      .insert(profiles)
+      .values({
+        email: SYSTEM_EMAIL,
+        password_hash: "!managed-by-system!",
+        role: "auditor",
+        nome: "Sistema SIFAU",
+        ativo: true,
+      })
+      .returning({ id: profiles.id, nome: profiles.nome });
+    if (created) {
+      systemUserCache = created;
+      return created;
+    }
+  } catch {
+    // Concorrência: outro request pode ter criado o usuário entre SELECT e INSERT.
+    const retry = await db
+      .select({ id: profiles.id, nome: profiles.nome })
+      .from(profiles)
+      .where(eq(profiles.email, SYSTEM_EMAIL))
+      .limit(1);
+    if (retry[0]) {
+      systemUserCache = retry[0];
+      return retry[0];
+    }
   }
-  // Fallback se algo der errado
-  return { id: "system", nome: "Sistema SIFAU" };
+
+  throw new Error("Não foi possível obter o usuário de sistema para a auditoria.");
 }
 
 export interface LogStatusOptions {
@@ -54,8 +68,7 @@ export async function logStatusChange(
   changedByName: string,
   opts: LogStatusOptions = {}
 ): Promise<void> {
-  const supabase = await getSupabaseClient();
-  await supabase.from('occurrence_status_log').insert({
+  await db.insert(statusLogs).values({
     occurrence_id: occurrenceId,
     from_status: from,
     to_status: to,

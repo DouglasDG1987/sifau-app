@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase";
+import { db } from "@/db";
+import { profiles, occurrences as occurrencesTable } from "@/db/schema";
+import { and, eq, inArray } from "drizzle-orm";
 import { getSessionProfile, clientIp, requireRole } from "@/lib/auth";
 import { logStatusChange, getSystemUser } from "@/lib/audit";
 import { classifyOccurrence, filterNearby } from "@/lib/classify";
@@ -62,44 +65,42 @@ async function enrichPhotos(rows: any[]): Promise<Occurrence[]> {
 }
 
 async function withFiscalName(rows: any[]): Promise<any[]> {
-  const fiscalIds = [...new Set(rows.map((r) => r.assigned_fiscal_id).filter(Boolean))];
+  const fiscalIds = [...new Set(rows.map((r) => r.assigned_fiscal_id).filter(Boolean))] as string[];
   if (fiscalIds.length === 0) return rows.map((r) => ({ ...r, fiscal_nome: null }));
-  
-  const supabase = await createClient();
-  const { data: fiscais } = await supabase
-    .from('profiles')
-    .select('id, nome')
-    .in('id', fiscalIds);
-    
-  const map = new Map((fiscais || []).map((f) => [f.id, f.nome]));
+
+  // Consulta interna do servidor: não use a sessão RLS de um cidadão para
+  // buscar dados de fiscais, pois a policy de profiles limita essa leitura.
+  const fiscais = await db
+    .select({ id: profiles.id, nome: profiles.nome })
+    .from(profiles)
+    .where(inArray(profiles.id, fiscalIds));
+
+  const map = new Map(fiscais.map((f) => [f.id, f.nome]));
   return rows.map((r) => ({ ...r, fiscal_nome: r.assigned_fiscal_id ? map.get(r.assigned_fiscal_id) ?? null : null }));
 }
 
 /** Atribuição automática: fiscal ativo com a fila mais curta (evita cherry-picking). */
 async function autoAssign(ip: string, geo?: string | null): Promise<{ fiscalId: string; fiscalName: string } | null> {
-  const supabase = await createClient();
-  const { data: fiscais } = await supabase
-    .from('profiles')
-    .select('id, nome')
-    .eq('role', 'fiscal')
-    .eq('ativo', true);
-    
-  if (!fiscais || fiscais.length === 0) return null;
-  
+  const fiscais = await db
+    .select({ id: profiles.id, nome: profiles.nome })
+    .from(profiles)
+    .where(and(eq(profiles.role, "fiscal"), eq(profiles.ativo, true)));
+
+  if (fiscais.length === 0) return null;
+
   const ids = fiscais.map((f) => f.id);
-  const { data: counts } = await supabase
-    .from('occurrences')
-    .select('assigned_fiscal_id')
-    .in('assigned_fiscal_id', ids)
-    .in('status', OPEN_STATUSES);
-    
+  const counts = await db
+    .select({ assigned_fiscal_id: occurrencesTable.assigned_fiscal_id })
+    .from(occurrencesTable)
+    .where(and(inArray(occurrencesTable.assigned_fiscal_id, ids), inArray(occurrencesTable.status, OPEN_STATUSES)));
+
   const load = new Map<string, number>();
-  for (const c of counts || []) {
+  for (const c of counts) {
     if (c.assigned_fiscal_id) {
       load.set(c.assigned_fiscal_id, (load.get(c.assigned_fiscal_id) ?? 0) + 1);
     }
   }
-  
+
   let best = fiscais[0];
   for (const f of fiscais) {
     if ((load.get(f.id) ?? 0) < (load.get(best.id) ?? 0)) best = f;
@@ -150,14 +151,17 @@ export async function GET(req: NextRequest) {
     // Tempo real de resolução via trilha de auditoria
     const { data: logs } = await supabase
       .from('occurrence_status_log')
-      .select('occurrence_id, changed_at, sla_deadline')
+      .select('occurrence_id, changed_at, occurrences!inner(sla_deadline)')
       .eq('to_status', 'resolvida')
       .order('changed_at', { ascending: false });
       
     const firstResolve = new Map<string, { at: number; sla: number }>();
     for (const l of logs || []) {
       if (!firstResolve.has(l.occurrence_id)) {
-        firstResolve.set(l.occurrence_id, { at: new Date(l.changed_at).getTime(), sla: new Date(l.sla_deadline).getTime() });
+        const occurrence = Array.isArray(l.occurrences) ? l.occurrences[0] : l.occurrences;
+      if (occurrence?.sla_deadline) {
+        firstResolve.set(l.occurrence_id, { at: new Date(l.changed_at).getTime(), sla: new Date(occurrence.sla_deadline).getTime() });
+      }
       }
     }
     let slaOk = 0;
@@ -329,12 +333,12 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient();
 
   // Classificação por IA (com fallback heurístico) — nunca trava o app
-  const { data: recent } = await supabase
-    .from('occurrences')
-    .select('*')
-    .eq('archived', false);
-    
-  const nearby = filterNearby(recent || [], lat, lng);
+  const recent = await db
+    .select()
+    .from(occurrencesTable)
+    .where(eq(occurrencesTable.archived, false));
+
+  const nearby = filterNearby(recent, lat, lng);
   const ai = body.ai ?? (await classifyOccurrence(description, { nearby, categoryHint: body.category }));
 
   // SLA por categoria

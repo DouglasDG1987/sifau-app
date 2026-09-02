@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/db";
 import { getSessionProfile } from "@/lib/auth";
 
@@ -33,6 +34,7 @@ const MAX_SIZE = 10 * 1024 * 1024; // 10MB
 // O resto do app (client, tipos, exibição das fotos) não muda nada.
 // ============================================================
 const ALLOW_LOCAL_DISK_STORAGE = process.env.SIFAU_ALLOW_LOCAL_DISK_STORAGE === "true";
+const MEDIA_BUCKET = process.env.SIFAU_MEDIA_BUCKET ?? "sifau-media";
 
 function isLikelyEphemeralHost(): boolean {
   // Sinais comuns de host serverless com filesystem efêmero.
@@ -43,13 +45,11 @@ export async function POST(req: NextRequest) {
   const profile = await getSessionProfile();
   if (!profile) return err("Não autenticado.", 401);
 
-  if (isLikelyEphemeralHost() && !ALLOW_LOCAL_DISK_STORAGE) {
+  const useDurableStorage = isLikelyEphemeralHost() && !ALLOW_LOCAL_DISK_STORAGE;
+  if (useDurableStorage && !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return err(
-      "Upload de mídia não configurado para este ambiente: o storage local em disco não " +
-        "persiste em hospedagem serverless e as fotos seriam perdidas. Configure um object " +
-        "storage durável (Supabase Storage, Vercel Blob ou S3) em src/app/api/media/route.ts " +
-        "antes de publicar — ver comentário no topo do arquivo.",
-      501
+      "Upload de mídia requer SUPABASE_SERVICE_ROLE_KEY em hospedagem serverless.",
+      503
     );
   }
 
@@ -64,14 +64,45 @@ export async function POST(req: NextRequest) {
   const base64 = dataUrl.split(",")[1];
 
   const filename = `${randomUUID()}.${ext}`;
-  const dir = path.join(process.cwd(), "public", "uploads");
-  await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, filename), Buffer.from(base64, "base64"));
+  const fileBuffer = Buffer.from(base64, "base64");
+  let url: string;
 
-  const url = `/uploads/${filename}`;
+  if (useDurableStorage) {
+    const admin = createSupabaseAdminClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+    const bucket = admin.storage.from(MEDIA_BUCKET);
+    const { data: existingBucket } = await admin.storage.getBucket(MEDIA_BUCKET);
+    if (!existingBucket) {
+      const { error: bucketError } = await admin.storage.createBucket(MEDIA_BUCKET, {
+        public: true,
+        fileSizeLimit: MAX_SIZE,
+        allowedMimeTypes: ["image/jpeg", "image/png", "image/webp"],
+      });
+      if (bucketError && !/already exists/i.test(bucketError.message)) {
+        return err("Não foi possível preparar o armazenamento de mídia.", 500);
+      }
+    }
+
+    const storagePath = `occurrences/${profile.id}/${filename}`;
+    const { error: uploadError } = await bucket.upload(storagePath, fileBuffer, {
+      contentType: mime,
+      upsert: false,
+    });
+    if (uploadError) return err("Não foi possível enviar a imagem.", 500);
+    url = bucket.getPublicUrl(storagePath).data.publicUrl;
+  } else {
+    const dir = path.join(process.cwd(), "public", "uploads");
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, filename), fileBuffer);
+    url = `/uploads/${filename}`;
+  }
+
   const supabase = await getSupabaseClient();
   const { data: media, error } = await supabase
-    .from('occurrence_media')
+    .from("occurrence_media")
     .insert({
       url,
       type: body.kind === "video" ? "video" : "foto",

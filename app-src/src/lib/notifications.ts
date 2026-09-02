@@ -93,11 +93,11 @@ export async function getAllNotifications(profileId: string, limit = 100): Promi
 /**
  * Marca uma notificação como lida
  */
-export async function markNotificationAsRead(notificationId: string): Promise<void> {
+export async function markNotificationAsRead(profileId: string, notificationId: string): Promise<void> {
   await db
     .update(notifications)
     .set({ read: true })
-    .where(eq(notifications.id, notificationId));
+    .where(and(eq(notifications.id, notificationId), eq(notifications.profile_id, profileId)));
 }
 
 /**
@@ -123,7 +123,7 @@ export async function registerDeviceToken(params: {
   const existing = await db
     .select()
     .from(deviceTokens)
-    .where(eq(deviceTokens.token, params.token))
+    .where(and(eq(deviceTokens.token, params.token), eq(deviceTokens.profile_id, params.profile_id)))
     .limit(1);
 
   if (existing[0]) {
@@ -152,11 +152,11 @@ export async function registerDeviceToken(params: {
 /**
  * Remove um token de dispositivo
  */
-export async function unregisterDeviceToken(token: string): Promise<void> {
+export async function unregisterDeviceToken(profileId: string, token: string): Promise<void> {
   await db
     .update(deviceTokens)
     .set({ active: false })
-    .where(eq(deviceTokens.token, token));
+    .where(and(eq(deviceTokens.token, token), eq(deviceTokens.profile_id, profileId)));
 }
 
 /**
