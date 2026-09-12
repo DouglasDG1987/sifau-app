@@ -1,0 +1,38 @@
+{
+  "appId": "com.sifau.app",
+  "appName": "SIFAU",
+  "webDir": ".next",
+  "server": {
+    "url": "http://localhost:3000",
+    "cleartext": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 3000,
+      "launchAutoHide": true,
+      "backgroundColor": "#4f46e5",
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "CENTER_CROP",
+      "androidSpinnerStyle": "large",
+      "iosSpinnerStyle": "small",
+      "spinnerColor": "#ffffff",
+      "showSpinner": true,
+      "androidSpinnerColor": "#ffffff",
+      "iosSpinnerColor": "#ffffff"
+    },
+    "Geolocation": {
+      "permissions": ["location", "coarseLocation"]
+    },
+    "Camera": {
+      "permissions": ["camera", "photos"]
+    }
+  },
+  "android": {
+    "buildOptions": {
+      "keystorePath": "path/to/keystore.jks",
+      "keystoreAlias": "alias",
+      "keystoreAliasPassword": "password",
+      "keystorePassword": "password"
+    }
+  }
+}
